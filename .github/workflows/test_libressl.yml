@@ -1,0 +1,74 @@
+name: "Test against LibreSSL"
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v2
+      - name: Cache LibreSSL
+        id: cache-libressl
+        uses: actions/cache@v4
+        env:
+          cache-name: cache-libressl
+        with:
+          path: libressl-3.8.2
+          key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ hashFiles('.github/workflows/test_libressl.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-build-${{ env.cache-name }}-
+            ${{ runner.os }}-build-
+            ${{ runner.os }}-
+
+      - name: Build LibreSSL
+        if: ${{ steps.cache-libressl.outputs.cache-hit != 'true' }}
+        shell: bash
+        run: |
+          curl -O https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-3.8.2.tar.gz
+          tar -xf libressl-3.8.2.tar.gz
+          cd libressl-3.8.2
+          rm -rf build
+          mkdir build
+          cd build
+          cmake .. -DLIBRESSL_APPS:BOOL=0 -DCMAKE_BUILD_TYPE=Release -DOPENSSLDIR= -DCMAKE_INSTALL_PREFIX:PATH=$(pwd)/../artifacts
+          cmake --build . --config Release -j$(nproc)
+          cmake --install .
+      - name: Build
+        shell: bash
+        run: |
+          rm -rf build.paho
+          mkdir build.paho
+          cd build.paho
+          echo "pwd $PWD"
+          cmake -DPAHO_BUILD_STATIC=FALSE -DPAHO_BUILD_SHARED=TRUE -DCMAKE_BUILD_TYPE=Debug -DPAHO_WITH_LIBRESSL=TRUE -DLIBRESSL_ROOT_DIR=$(pwd)/../libressl-3.8.2/artifacts -DPAHO_BUILD_DOCUMENTATION=FALSE -DPAHO_BUILD_SAMPLES=TRUE -DPAHO_HIGH_PERFORMANCE=TRUE ..
+          cmake --build . --config Debug  -j$(nproc)
+      - name: Copy DLLs on Windows
+        if: ${{ runner.os == 'windows-latest' }}
+        shell: bash
+        run: |
+          # On Windows we need to copy the dlls manually
+          cd build.paho
+          cp src/Debug/*.dll .
+      - name: Start test broker
+        shell: bash
+        run: |
+          git clone https://github.com/eclipse/paho.mqtt.testing.git
+          cd paho.mqtt.testing/interoperability
+          python3 startbroker.py -c localhost_testing.conf &
+      - name: Start test proxy
+        shell: bash
+        run: |
+          python3 test/mqttsas.py &
+      - name: run tests
+        shell: bash
+        run: |
+          cd build.paho
+          ctest -C Debug -VV --timeout 600
+      - name: clean up
+        shell: bash
+        run: |
+          killall python3 || true
+          sleep 3 # allow broker time to terminate and report
