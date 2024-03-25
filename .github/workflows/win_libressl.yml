@@ -1,0 +1,51 @@
+name: "Test LibreSSL Windows"
+on: [push, pull_request]
+
+jobs:
+  win:
+    runs-on: windows-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v2
+      - name: Build LibreSSL
+        run: |
+          curl -O https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-3.8.2.tar.gz
+          tar -xf libressl-3.8.2.tar.gz
+          cd libressl-3.8.2
+          if (test-path build) {
+          rm build -r -fo
+          }
+          mkdir build
+          cd build
+          cmake .. -DLIBRESSL_APPS:BOOL=0 -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX:PATH=$(pwd)/../artifacts
+          cmake --build . --config Release -j "$env:NUMBER_OF_PROCESSORS"
+          cmake --install .
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Build
+        run: |
+          if (test-path build.paho) {
+          rm build.paho -r -fo
+          }
+          mkdir build.paho
+          cd build.paho
+          echo "pwd $PWD"
+          cmake -G "NMake Makefiles" -DPAHO_WITH_LIBRESSL=TRUE -DLIBRESSL_ROOT_DIR="$PWD/../libressl-3.8.2/artifacts" -DPAHO_BUILD_DOCUMENTATION=FALSE -DPAHO_BUILD_SAMPLES=TRUE -DCMAKE_BUILD_TYPE=Debug -DCMAKE_VERBOSE_MAKEFILE=TRUE -DPAHO_BUILD_STATIC=FALSE -DPAHO_BUILD_SHARED=TRUE -DPAHO_HIGH_PERFORMANCE=TRUE ..
+          nmake
+      - name: Start test broker
+        run: |
+          python --version
+          git clone https://github.com/eclipse/paho.mqtt.testing.git
+          cd paho.mqtt.testing/interoperability
+          Start-Process python -ArgumentList 'startbroker.py -c localhost_testing.conf'
+      - name: Start test proxy
+        run: |
+          Start-Process python -ArgumentList 'test/mqttsas.py'
+      - name: run tests
+        run: |
+          cd build.paho
+          # ctest -C Debug -VV --timeout 600
+          ctest -T test -VV
+      - name: clean up
+        run: |
+          taskkill /IM python.exe /F
+          sleep 3 # allow broker time to terminate and report
